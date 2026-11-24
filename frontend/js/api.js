@@ -39,6 +39,7 @@ export function createApi(getToken, onUnauthorized) {
     reconcileAll: () => req("/api/reconcile"),
     reconcileOne: (code) => req(`/api/reconcile/${encodeURIComponent(code)}`),
     proofTicket: (code) => req(`/api/proof/ticket/${encodeURIComponent(code)}`),
+    capacity: () => req("/api/capacity"),
     customsJobs: () => req("/api/customs/jobs"),
     customsStub: (d) => req("/api/customs-stub", { method: "POST", body: JSON.stringify(d) }),
     craneJobs: () => req("/api/crane/jobs"),

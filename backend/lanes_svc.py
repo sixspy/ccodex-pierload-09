@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
-from db import connect, now_iso, write_audit
+from db import bridge_capacity_map, connect, now_iso, write_audit
 from models import LaneIn
 
 router = APIRouter(tags=["lanes"])
@@ -16,18 +16,27 @@ def list_lanes(authorization: AuthHeader = None, bridge_id: int | None = None):
     with connect() as conn:
         if bridge_id:
             rows = conn.execute(
-                """SELECT l.*, b.bridge_code, b.name bridge_name FROM weigh_lanes l
+                """SELECT l.*, b.bridge_code, b.name bridge_name, b.max_gross_t
+                   FROM weigh_lanes l
                    JOIN weigh_bridges b ON b.id=l.bridge_id
                    WHERE l.bridge_id=? ORDER BY l.lane_code""",
                 (bridge_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                """SELECT l.*, b.bridge_code, b.name bridge_name FROM weigh_lanes l
+                """SELECT l.*, b.bridge_code, b.name bridge_name, b.max_gross_t
+                   FROM weigh_lanes l
                    JOIN weigh_bridges b ON b.id=l.bridge_id
                    ORDER BY l.lane_code"""
             ).fetchall()
-        return {"items": [dict(r) for r in rows]}
+        # 五页同态：车道页额载灯与地磅页同一口径。
+        states = bridge_capacity_map(conn)
+        items = []
+        for r in rows:
+            d = dict(r)
+            d["capacity_state"] = states.get(d["bridge_code"], "绿灯")
+            items.append(d)
+        return {"items": items}
 
 
 @router.get("/api/lanes/{lane_id}")

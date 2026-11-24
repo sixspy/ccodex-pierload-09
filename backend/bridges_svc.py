@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
-from db import connect, now_iso, write_audit
+from db import bridge_capacity_map, connect, now_iso, write_audit
 from models import BridgeIn
 
 router = APIRouter(tags=["bridges"])
@@ -17,7 +17,14 @@ def list_bridges(authorization: AuthHeader = None):
         rows = conn.execute(
             "SELECT * FROM weigh_bridges ORDER BY id"
         ).fetchall()
-        return {"items": [dict(r) for r in rows]}
+        # 五页同态：地磅页额载灯与 /api/capacity 同一口径。
+        states = bridge_capacity_map(conn)
+        items = []
+        for r in rows:
+            d = dict(r)
+            d["capacity_state"] = states.get(d["bridge_code"], "绿灯")
+            items.append(d)
+        return {"items": items}
 
 
 @router.get("/api/bridges/{bridge_id}")
@@ -44,7 +51,6 @@ def get_bridge(bridge_id: int, authorization: AuthHeader = None):
             "lanes": [dict(x) for x in lanes],
             "active_tickets": stats["active"],
         }
-
 
 @router.post("/api/bridges")
 def create_bridge(body: BridgeIn, authorization: AuthHeader = None):

@@ -36,6 +36,7 @@ createApp({
     const lineageEdges = ref([]);
     const customsJobs = ref([]);
     const craneJobs = ref([]);
+    const capacity = ref({ bridges: [], lanes: [], denials: [], formal_excess: [] });
     const bridgeDetail = ref(null);
     const ticketDetail = ref(null);
     const reconOne = ref(null);
@@ -97,6 +98,9 @@ createApp({
       if (s.includes("封闸")) return "warn";
       return "muted";
     }
+    function capClass(s) {
+      return s === "红灯" ? "fail" : "pass";
+    }
     function shortText(t) {
       if (!t) return "";
       const s = String(t);
@@ -126,10 +130,10 @@ createApp({
       if (!token.value) return;
       clearFlash();
       try {
-        const [d, br, ln, tk, ov, gr, sl, bl, lg, cj, cj2] = await Promise.all([
+        const [d, br, ln, tk, ov, gr, sl, bl, lg, cj, cj2, cap] = await Promise.all([
           api.dashboard(), api.bridges(), api.lanes(), api.tickets(), api.overloads(),
           api.gateReleases(), api.seals(), api.blList(), api.lineage(),
-          api.customsJobs(), api.craneJobs(),
+          api.customsJobs(), api.craneJobs(), api.capacity(),
         ]);
         dash.value = d || {};
         bridges.value = br.items || [];
@@ -142,6 +146,7 @@ createApp({
         lineageEdges.value = lg.items || [];
         customsJobs.value = cj.items || [];
         craneJobs.value = cj2.items || [];
+        capacity.value = cap || { bridges: [], lanes: [], denials: [], formal_excess: [] };
         if (bridges.value.length) {
           laneForm.value.bridge_id = laneForm.value.bridge_id || bridges.value[0].id;
         }
@@ -185,7 +190,10 @@ createApp({
         const r = await api.createTicket(payload);
         flashOk(`过磅完成：${r.status}${r.overload ? "（超重）" : ""}`);
         await refresh();
-      } catch (e) { flashErr(e); }
+      } catch (e) {
+        flashErr(e);
+        await refresh();
+      }
     }
     async function loadTicketDetail(id) { ticketDetail.value = await api.ticket(id); }
     function selectTicket() {}
@@ -262,13 +270,13 @@ createApp({
     return {
       token, user, username, password, err, actionErr, actionOk, tab, nav,
       dash, bridges, lanes, tickets, overloads, gateReleases, seals, blList,
-      lineageEdges, customsJobs, craneJobs, bridgeDetail, ticketDetail,
+      lineageEdges, customsJobs, craneJobs, capacity, bridgeDetail, ticketDetail,
       reconOne, reconAllItems, proofOne, reconCode, proofCode,
       bridgeForm, laneForm, ticketForm, overloadOpenForm, gateForm, sealForm,
       blForm, lineageForm, customsForm, craneForm,
       adjudicableTickets, releasableTickets, sealableTickets,
       login, logout, refresh,
-      fmtT, ticketClass, shortText,
+      fmtT, ticketClass, shortText, capClass,
       createBridge, loadBridgeDetail, createLane, createTicket, loadTicketDetail, selectTicket,
       openOverload, closeOverload, releaseGate, createSeal, registerBl, addLineage,
       loadReconcile, loadAllReconcile, loadProof, enqueueCustoms, enqueueCrane,

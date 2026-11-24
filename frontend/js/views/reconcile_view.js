@@ -14,9 +14,20 @@ export const reconcileViewTemplate = `
       <p>申报 {{ reconOne.declared_gross_t }}t · 过磅合计 {{ reconOne.ticket_sum_t }}t</p>
       <p :class="reconOne.balanced ? 'ok' : 'bad'">{{ reconOne.balanced ? '账实平衡' : '偏差待查' }}</p>
       <p>快照数 {{ reconOne.seal_count }} · 可出证明 {{ reconOne.proof_ready ? '是' : '否' }}</p>
+      <p v-if="reconOne.capacity_blocked" class="recon-warn">
+        额载禁入：{{ reconOne.capacity_excess.length }} 张超额载票不计入账实合计
+      </p>
+      <ul v-if="reconOne.capacity_excess && reconOne.capacity_excess.length">
+        <li v-for="x in reconOne.capacity_excess" :key="x.ticket_code" class="recon-warn">
+          {{ x.ticket_code }} · {{ x.bridge_code }} 毛重 {{ x.gross_t }}t / 额载 {{ x.max_gross_t }}t · 超 {{ x.excess_t }}t
+        </li>
+      </ul>
     </div>
     <ul v-if="reconAllItems.length">
-      <li v-for="r in reconAllItems" :key="r.bl_code">{{ r.bl_code }} · {{ r.balanced ? '平' : '偏' }}</li>
+      <li v-for="r in reconAllItems" :key="r.bl_code">
+        {{ r.bl_code }} · {{ r.balanced ? '平' : '偏' }}
+        <span v-if="r.capacity_blocked" class="recon-warn">· 额载禁入</span>
+      </li>
     </ul>
   </section>
   <section class="panel">
@@ -27,6 +38,7 @@ export const reconcileViewTemplate = `
       <p>提单匹配 {{ proofOne.manifest_matches_bl ? '是' : '否' }}</p>
       <p>超重闭环 {{ proofOne.overload_closed ? '是' : '否' }}</p>
       <p>已放行 {{ proofOne.released ? '是' : '否' }}</p>
+      <p>额载 {{ proofOne.capacity_excess ? '超额载' : '合规' }}</p>
       <p>一致 {{ proofOne.coherent ? '是' : '否' }}</p>
     </div>
   </section>

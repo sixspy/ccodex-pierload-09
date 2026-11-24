@@ -11,6 +11,7 @@ from auth import router as auth_router
 from axle_lineage_svc import router as lineage_router
 from bl_svc import router as bl_router
 from bridges_svc import router as bridges_router
+from capacity_svc import router as capacity_router
 from crane_plan_svc import router as crane_router
 from customs_stub_svc import router as customs_router
 from db import FRONTEND, PRODUCT_META, init_db
@@ -38,6 +39,7 @@ for r in (
     auth_router,
     bridges_router,
     lanes_router,
+    capacity_router,
     tickets_router,
     overload_router,
     gate_router,

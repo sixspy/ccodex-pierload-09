@@ -1,0 +1,23 @@
+{
+  "bridges": [
+    {"bridge_code": "BR-I12", "pier_zone": "西岸", "name": "西岸十二号地磅", "max_gross_t": 50, "axle_limit": 6, "status": "运行"}
+  ],
+  "lanes": [
+    {"lane_code": "LN-I12-IN", "bridge_code": "BR-I12", "direction": "进闸", "overload_threshold_t": 45, "side_lane_ref": "旁路壬", "status": "开放"}
+  ],
+  "bl_manifests": [
+    {"bl_code": "BL-2026-0112", "cargo_desc": "超载种子卷钢", "declared_gross_t": 55.0, "vessel_voyage": "超载轮/0912"}
+  ],
+  "tickets": [
+    {
+      "ticket_code": "PL-I12",
+      "lane_code": "LN-I12-IN",
+      "bl_ref": "BL-2026-0112",
+      "vehicle_plate": "沪A·超载9",
+      "axle_weights": [{"axle": 1, "w": 12.5}, {"axle": 2, "w": 14.0}, {"axle": 3, "w": 15.0}, {"axle": 4, "w": 13.5}],
+      "gross_t": 55.0,
+      "status": "已裁定",
+      "created_at": "2026-01-11T07:40:00"
+    }
+  ]
+}

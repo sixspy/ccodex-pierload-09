@@ -1,6 +1,8 @@
 """码头锁与争用登记（写入路径嵌入）。"""
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -21,10 +23,25 @@ def try_acquire(conn, lock_key: str, holder: str) -> bool:
         "SELECT holder FROM pier_locks WHERE lock_key=?", (lock_key,)
     ).fetchone()
     if row is None:
-        conn.execute(
-            "INSERT INTO pier_locks(lock_key,holder,acquired_at) VALUES (?,?,?)",
-            (lock_key, holder, now),
-        )
+        try:
+            # INSERT OR IGNORE 依赖 PK 原子性：真人并发同磅抢建时只有一个能插进去。
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO pier_locks(lock_key,holder,acquired_at)
+                   VALUES (?,?,?)""",
+                (lock_key, holder, now),
+            )
+        except sqlite3.OperationalError:
+            conn.rollback()
+            return False
+        if cur.rowcount == 0:
+            # 同刻另一会话已抢先插入，本会话按后到处理。
+            conn.execute(
+                """INSERT INTO contention_log(lock_key,actor,action,detail,created_at)
+                   VALUES (?,?,?,?,?)""",
+                (lock_key, holder, "争用", "同刻抢占落败", now),
+            )
+            return False
+        conn.commit()
         return True
     if row["holder"] == holder:
         return True
@@ -37,14 +54,20 @@ def try_acquire(conn, lock_key: str, holder: str) -> bool:
 
 
 def release(conn, lock_key: str, holder: str) -> None:
+    # 先丢弃未提交的业务半写，再单独落盘锁释放：
+    # 成功路径此前已 commit，回滚为空操作；失败路径保证不留半写、锁也不泄漏。
+    conn.rollback()
     conn.execute(
         "DELETE FROM pier_locks WHERE lock_key=? AND holder=?",
         (lock_key, holder),
     )
+    conn.commit()
 
 
 def require_lock(conn, lock_key: str, holder: str) -> None:
     if not try_acquire(conn, lock_key, holder):
+        # 后到只记争用痕：争用行先落盘，业务写一律不落。
+        conn.commit()
         raise HTTPException(409, "争用：后到只记争用，不写业务")
 
 

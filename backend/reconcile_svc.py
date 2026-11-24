@@ -43,8 +43,12 @@ def _reconcile_bl(conn, bl_code: str) -> dict:
         "SELECT * FROM bl_manifests WHERE bl_code=?", (bl_code,)
     ).fetchone()
     tickets = conn.execute(
-        """SELECT ticket_code, gross_t, status, generation FROM weigh_tickets
-           WHERE bl_ref=? AND status NOT IN ('作废')""",
+        """SELECT t.ticket_code, t.gross_t, t.status, t.generation,
+                  b.bridge_code, b.max_gross_t
+           FROM weigh_tickets t
+           JOIN weigh_lanes l ON l.id=t.lane_id
+           JOIN weigh_bridges b ON b.id=l.bridge_id
+           WHERE t.bl_ref=? AND t.status NOT IN ('作废')""",
         (bl_code,),
     ).fetchall()
     if not tickets:
@@ -56,7 +60,25 @@ def _reconcile_bl(conn, bl_code: str) -> dict:
             "reason": "无过磅票",
             "tickets": [],
         }
-    ticket_sum = round(sum(float(t["gross_t"]) for t in tickets), 3)
+    # 账实唯一口径：毛重超地磅额载的票不得计入账实合计。
+    capacity_excess = []
+    countable = []
+    for t in tickets:
+        if float(t["gross_t"]) > float(t["max_gross_t"]):
+            capacity_excess.append(
+                {
+                    "ticket_code": t["ticket_code"],
+                    "gross_t": t["gross_t"],
+                    "bridge_code": t["bridge_code"],
+                    "max_gross_t": t["max_gross_t"],
+                    "excess_t": round(
+                        float(t["gross_t"]) - float(t["max_gross_t"]), 3
+                    ),
+                }
+            )
+        else:
+            countable.append(t)
+    ticket_sum = round(sum(float(t["gross_t"]) for t in countable), 3)
     declared = float(bl["declared_gross_t"])
     matched = validate_bl_match(declared, ticket_sum, tolerance=0.1)
     seal_rows = conn.execute(
@@ -65,12 +87,15 @@ def _reconcile_bl(conn, bl_code: str) -> dict:
            WHERE t.bl_ref=?""",
         (bl_code,),
     ).fetchall()
-    proof_ok = matched and len(seal_rows) >= 1
+    capacity_blocked = bool(capacity_excess)
+    proof_ok = matched and len(seal_rows) >= 1 and not capacity_blocked
     return {
         "bl_code": bl_code,
         "declared_gross_t": declared,
         "ticket_sum_t": ticket_sum,
-        "balanced": matched,
+        "balanced": matched and not capacity_blocked,
+        "capacity_blocked": capacity_blocked,
+        "capacity_excess": capacity_excess,
         "proof_ready": proof_ok,
         "seal_count": len(seal_rows),
         "tickets": [dict(t) for t in tickets],
@@ -109,16 +134,28 @@ def proof_ticket(ticket_code: str, authorization: AuthHeader = None):
             manifest_match = validate_bl_match(
                 float(bl["declared_gross_t"]), float(ticket["gross_t"])
             )
+        bridge = conn.execute(
+            """SELECT b.bridge_code, b.max_gross_t FROM weigh_lanes l
+               JOIN weigh_bridges b ON b.id=l.bridge_id WHERE l.id=?""",
+            (ticket["lane_id"],),
+        ).fetchone()
+        capacity_excess = bool(
+            bridge and float(ticket["gross_t"]) > float(bridge["max_gross_t"])
+        )
         return {
             "ticket_code": ticket_code,
             "bl_ref": ticket["bl_ref"],
             "gross_t": ticket["gross_t"],
             "manifest_matches_bl": manifest_match,
+            "capacity_excess": capacity_excess,
             "has_seal": seal is not None,
             "seal_generation": seal["ticket_generation"] if seal else None,
             "released": release is not None,
             "overload_closed": overload_closed,
             "coherent": bool(
-                manifest_match and overload_closed and (seal or release)
+                manifest_match
+                and overload_closed
+                and (seal or release)
+                and not capacity_excess
             ),
         }

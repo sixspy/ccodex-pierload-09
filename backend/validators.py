@@ -38,6 +38,12 @@ def validate_gross_cap(gross: float, max_gross: float) -> None:
         raise HTTPException(422, "毛重无效")
 
 
+def capacity_verdict(gross: float, max_gross: float) -> tuple[bool, float]:
+    """额载裁决：账实唯一口径，毛重严格大于地磅额载即超额载。"""
+    excess = round(float(gross) - float(max_gross), 3)
+    return excess > 0, max(excess, 0.0)
+
+
 def validate_bl_match(declared: float, gross: float, tolerance: float = 0.08) -> bool:
     if declared <= 0:
         return False

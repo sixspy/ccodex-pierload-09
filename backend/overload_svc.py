@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
-from db import connect, now_iso, write_audit
+from db import bridge_capacity_map, connect, now_iso, write_audit
 from locks import release, require_lock
 from models import OverloadCloseIn, OverloadOpenIn
 from validators import adjudicate_overload, validate_ticket_mutable
@@ -16,15 +16,27 @@ router = APIRouter(tags=["overload"])
 def list_overloads(authorization: AuthHeader = None, status: str | None = None):
     require_user(authorization)
     with connect() as conn:
-        q = """SELECT h.*, t.ticket_code, t.vehicle_plate, t.gross_t
-               FROM overload_holds h JOIN weigh_tickets t ON t.id=h.ticket_id"""
+        q = """SELECT h.*, t.ticket_code, t.vehicle_plate, t.gross_t,
+                      l.bridge_id, b.bridge_code, b.max_gross_t
+               FROM overload_holds h
+               JOIN weigh_tickets t ON t.id=h.ticket_id
+               JOIN weigh_lanes l ON l.id=t.lane_id
+               JOIN weigh_bridges b ON b.id=l.bridge_id"""
         if status:
             rows = conn.execute(
                 q + " WHERE h.status=? ORDER BY h.id DESC", (status,)
             ).fetchall()
         else:
             rows = conn.execute(q + " ORDER BY h.id DESC").fetchall()
-        return {"items": [dict(r) for r in rows]}
+        # 五页同态：超重页额载灯与地磅页同一口径。
+        states = bridge_capacity_map(conn)
+        items = []
+        for r in rows:
+            d = dict(r)
+            d["capacity_state"] = states.get(d["bridge_code"], "绿灯")
+            d["capacity_excess"] = float(d["gross_t"]) > float(d["max_gross_t"])
+            items.append(d)
+        return {"items": items}
 
 
 @router.post("/api/overloads/open")

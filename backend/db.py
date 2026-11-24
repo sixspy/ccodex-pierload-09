@@ -104,6 +104,20 @@ CREATE TABLE IF NOT EXISTS overload_holds(
   side_lane_note TEXT,
   FOREIGN KEY(ticket_id) REFERENCES weigh_tickets(id)
 );
+CREATE TABLE IF NOT EXISTS capacity_denials(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bridge_code TEXT NOT NULL,
+  lane_id INTEGER,
+  ticket_code TEXT,
+  vehicle_plate TEXT,
+  gross_t REAL NOT NULL,
+  max_gross_t REAL NOT NULL,
+  excess_t REAL NOT NULL,
+  adjudication TEXT NOT NULL,
+  sealed INTEGER NOT NULL DEFAULT 1,
+  detail TEXT,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS gate_releases(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticket_id INTEGER NOT NULL,
@@ -183,6 +197,118 @@ CREATE TABLE IF NOT EXISTS crane_plan_jobs(
   created_at TEXT NOT NULL
 );
 """
+
+
+def record_capacity_denial(
+    conn: sqlite3.Connection,
+    *,
+    bridge_code: str,
+    lane_id: int | None,
+    ticket_code: str | None,
+    vehicle_plate: str | None,
+    gross_t: float,
+    max_gross_t: float,
+    detail: str = "",
+) -> int:
+    """额载禁入纪要：裁决当班封死（sealed=1），只增不改。"""
+    excess = round(gross_t - max_gross_t, 3)
+    cur = conn.execute(
+        """INSERT INTO capacity_denials(bridge_code,lane_id,ticket_code,vehicle_plate,
+           gross_t,max_gross_t,excess_t,adjudication,sealed,detail,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bridge_code,
+            lane_id,
+            ticket_code,
+            vehicle_plate,
+            float(gross_t),
+            float(max_gross_t),
+            excess,
+            "额载禁入",
+            1,
+            detail,
+            now_iso(),
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def _bridge_excess_rows(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """SELECT t.ticket_code, t.gross_t, b.bridge_code, b.max_gross_t
+           FROM weigh_tickets t
+           JOIN weigh_lanes l ON l.id=t.lane_id
+           JOIN weigh_bridges b ON b.id=l.bridge_id
+           WHERE t.status!='作废' AND t.gross_t > b.max_gross_t
+           ORDER BY t.id"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def capacity_overview(conn: sqlite3.Connection) -> dict:
+    """额载状态汇总：账实唯一口径，供地磅/车道/过磅/超重/对账五页同态引用。"""
+    excess_rows = _bridge_excess_rows(conn)
+    denials = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM capacity_denials ORDER BY id DESC"
+        ).fetchall()
+    ]
+    excess_by_bridge: dict[str, int] = {}
+    for row in excess_rows:
+        excess_by_bridge[row["bridge_code"]] = (
+            excess_by_bridge.get(row["bridge_code"], 0) + 1
+        )
+    denial_by_bridge: dict[str, int] = {}
+    for row in denials:
+        denial_by_bridge[row["bridge_code"]] = (
+            denial_by_bridge.get(row["bridge_code"], 0) + 1
+        )
+
+    def state(code: str) -> str:
+        if excess_by_bridge.get(code) or denial_by_bridge.get(code):
+            return "红灯"
+        return "绿灯"
+
+    bridges = []
+    for b in conn.execute("SELECT * FROM weigh_bridges ORDER BY id").fetchall():
+        bridges.append(
+            {
+                "bridge_code": b["bridge_code"],
+                "name": b["name"],
+                "max_gross_t": b["max_gross_t"],
+                "capacity_state": state(b["bridge_code"]),
+                "excess_count": excess_by_bridge.get(b["bridge_code"], 0),
+                "denial_count": denial_by_bridge.get(b["bridge_code"], 0),
+            }
+        )
+    lanes = []
+    for row in conn.execute(
+        """SELECT l.lane_code, l.status, b.bridge_code, b.max_gross_t
+           FROM weigh_lanes l JOIN weigh_bridges b ON b.id=l.bridge_id
+           ORDER BY l.lane_code"""
+    ).fetchall():
+        lanes.append(
+            {
+                "lane_code": row["lane_code"],
+                "bridge_code": row["bridge_code"],
+                "max_gross_t": row["max_gross_t"],
+                "capacity_state": state(row["bridge_code"]),
+            }
+        )
+    return {
+        "bridges": bridges,
+        "lanes": lanes,
+        "denials": denials,
+        "formal_excess": excess_rows,
+    }
+
+
+def bridge_capacity_map(conn: sqlite3.Connection) -> dict[str, str]:
+    return {
+        b["bridge_code"]: b["capacity_state"]
+        for b in capacity_overview(conn)["bridges"]
+    }
 
 
 def write_audit(
@@ -405,6 +531,102 @@ def seed_seals_sample(conn: sqlite3.Connection) -> None:
         )
 
 
+def seed_capacity_fixture(conn: sqlite3.Connection) -> None:
+    """超额载种子夹具：BR-I12 额载 50t，种入一张 55t 的正式票 PL-I12。
+
+    该夹具专门用于复现“毛重已超地磅额载、过磅写口仍建正式票”的账实偏差。
+    """
+    path = FIXTURES / "capacity_seed.json"
+    if not path.exists():
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for row in data.get("bridges", []):
+        if conn.execute(
+            "SELECT id FROM weigh_bridges WHERE bridge_code=?",
+            (row["bridge_code"],),
+        ).fetchone():
+            continue
+        conn.execute(
+            """INSERT INTO weigh_bridges(bridge_code,pier_zone,name,max_gross_t,
+               axle_limit,status,created_at) VALUES (?,?,?,?,?,?,?)""",
+            (
+                row["bridge_code"],
+                row["pier_zone"],
+                row["name"],
+                float(row["max_gross_t"]),
+                int(row.get("axle_limit", 6)),
+                row.get("status", "运行"),
+                row.get("created_at", now_iso()),
+            ),
+        )
+    for row in data.get("lanes", []):
+        if conn.execute(
+            "SELECT id FROM weigh_lanes WHERE lane_code=?", (row["lane_code"],)
+        ).fetchone():
+            continue
+        br = _bridge_id(conn, row["bridge_code"])
+        if not br:
+            continue
+        conn.execute(
+            """INSERT INTO weigh_lanes(lane_code,bridge_id,direction,overload_threshold_t,
+               side_lane_ref,status,created_at) VALUES (?,?,?,?,?,?,?)""",
+            (
+                row["lane_code"],
+                br,
+                row["direction"],
+                float(row["overload_threshold_t"]),
+                row.get("side_lane_ref", ""),
+                row.get("status", "开放"),
+                row.get("created_at", now_iso()),
+            ),
+        )
+    for row in data.get("bl_manifests", []):
+        if conn.execute(
+            "SELECT id FROM bl_manifests WHERE bl_code=?", (row["bl_code"],)
+        ).fetchone():
+            continue
+        conn.execute(
+            """INSERT INTO bl_manifests(bl_code,cargo_desc,declared_gross_t,vessel_voyage,
+               status,created_at) VALUES (?,?,?,?,?,?)""",
+            (
+                row["bl_code"],
+                row["cargo_desc"],
+                float(row["declared_gross_t"]),
+                row["vessel_voyage"],
+                row.get("status", "在港"),
+                row.get("created_at", now_iso()),
+            ),
+        )
+    for row in data.get("tickets", []):
+        if conn.execute(
+            "SELECT id FROM weigh_tickets WHERE ticket_code=?",
+            (row["ticket_code"],),
+        ).fetchone():
+            continue
+        lane = _lane_id(conn, row["lane_code"])
+        if not lane:
+            continue
+        axles = row.get("axle_weights", [])
+        gross = float(row.get("gross_t", sum(float(a.get("w", 0)) for a in axles)))
+        conn.execute(
+            """INSERT INTO weigh_tickets(ticket_code,lane_id,bl_ref,vehicle_plate,
+               axle_weights,gross_t,generation,status,adjudicated_at,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row["ticket_code"],
+                lane,
+                row["bl_ref"],
+                row["vehicle_plate"],
+                json.dumps(axles, ensure_ascii=False),
+                gross,
+                int(row.get("generation", 1)),
+                row.get("status", "已裁定"),
+                row.get("adjudicated_at"),
+                row.get("created_at", now_iso()),
+            ),
+        )
+
+
 def seed_lineage_samples(conn: sqlite3.Connection) -> None:
     for row in _load_json("axle_lineage.json"):
         fr = conn.execute(
@@ -443,6 +665,7 @@ def init_db() -> None:
         seed_bridges(conn)
         seed_lanes(conn)
         seed_bl_manifests(conn)
+        seed_capacity_fixture(conn)
         seed_tickets(conn)
         seed_overloads(conn)
         seed_gate_samples(conn)
